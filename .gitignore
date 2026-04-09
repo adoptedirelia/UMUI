@@ -1,0 +1,25 @@
+__pycache__/
+*.pyc
+*.pyo
+
+# Data directories
+slurm_script/
+log/
+training_data/
+eval_data/
+eval_data_binary/
+human_data/
+data_transfer/
+train_data/
+result/
+wandb/
+
+# IDE
+.vscode/
+.idea/
+
+# Notebooks
+*.ipynb
+
+# OS
+.DS_Store

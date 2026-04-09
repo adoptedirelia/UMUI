@@ -10,8 +10,7 @@ src/
 ├── run_synthetic.py                                  # CLI entry for synthetic data generation
 ├── analyse/                                          # Analysis and metrics
 │   ├── analyse.py                                    # Core utilities (correlation, Krippendorff α, histograms)
-│   ├── main.py                                       # Analysis pipeline (variant 1)
-│   └── main2.py                                      # Analysis pipeline (variant 2)
+│   └── main.py                                       # Analysis pipeline (variant 1)
 ├── eval/
 │   └── main.py                                       # Evaluation (acc, F1, MSE, NLL, ECE)
 ├── synthetic_data/                                   # Synthetic data generation

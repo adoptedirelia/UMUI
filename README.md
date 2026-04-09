@@ -1,4 +1,4 @@
-# Distill UNLI
+# UMUI
 
 Multi-modal claim verification using distilled Natural Language Inference. Supports synthetic data generation, model fine-tuning, and evaluation across video, audio, text, and omni modalities.
 

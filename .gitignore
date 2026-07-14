@@ -3,6 +3,7 @@ __pycache__/
 *.pyo
 
 # Data directories
+slurm/
 slurm_script/
 log/
 training_data/
@@ -13,10 +14,16 @@ data_transfer/
 train_data/
 result/
 wandb/
+output/
+outputs/
+
+# Gemma NLI
+src/training/NLI-gemma/
 
 # IDE
 .vscode/
 .idea/
+.claude/
 
 # Notebooks
 *.ipynb

@@ -159,6 +159,21 @@ deepspeed --num_gpus=4 omni_trainer.py
 
 `src/eval/run_eval.py` evaluates the released model ([AdoptedIrelia/UNLI](https://huggingface.co/AdoptedIrelia/UNLI)) on the UMUI benchmarks ([AdoptedIrelia/UMUI](https://huggingface.co/datasets/AdoptedIrelia/UMUI)) in one command. The model (base + LoRA adapter in `lora/`) and the label files are downloaded from Hugging Face automatically; only the media tarballs (`wikivideo.tar.gz`, `audio_entailment.tar.gz`) need to be extracted locally and passed via `--media-root` (or the `UMUI_MEDIA_ROOT` env var).
 
+### Quick start via scripts
+
+```bash
+# one-time: download model + labels + media tarballs from Hugging Face and extract
+bash script/download.sh /path/to/UMUI-data        # SKIP_MEDIA=1 to skip the ~26 GB tarballs
+
+# run the evals (extra args pass through to run_eval.py)
+export UMUI_ROOT=/path/to/UMUI-data
+bash script/eval_unli.sh
+bash script/eval_clotho.sh
+bash script/eval_wikivideo.sh video     # or: audio / omni
+```
+
+### Running run_eval.py directly
+
 ```bash
 # text: UNLI validation split (no media needed)
 python -m src.eval.run_eval --dataset unli --modality text

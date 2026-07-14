@@ -4,17 +4,17 @@ from typing import Optional
 from dataclasses import dataclass, field
 from typing import List
 
-DATA_ROOT = os.environ.get("DISTILL_UNLI_DATA_ROOT", "")
+DATA_ROOT = os.environ.get("DISTILL_UNLI_DATA_ROOT", "/exp/dzhang1/UMUI/training-data")
 
 @dataclass
 class OmniTrainingConfig:
     model_name: str = 'Qwen/Qwen2.5-Omni-3B'
-    output_dir: str = './output/NLI_output_lora'
+    output_dir: str = os.environ.get("ABLATION_OUTPUT_DIR", '/exp/dzhang1/UMUI-rebuttal/MSE_model')
 
     # train_data
-    omni_path: str = ''
-    video_path: str = ''
-    audio_path: str = ''
+    omni_path: str = '/exp/dzhang1/UMUI/training-data/omni.json'
+    video_path: str = '/exp/dzhang1/UMUI/training-data/video.json'
+    audio_path: str = '/exp/dzhang1/UMUI/training-data/audio.json'
     va_data: bool = False
     video_data: bool = True
     audio_data: bool = True 
@@ -23,7 +23,7 @@ class OmniTrainingConfig:
     # Training parameters
     per_device_train_batch_size: int = 1
     gradient_accumulation_steps: int = 4
-    num_train_epochs: int = 15
+    num_train_epochs: int = 3
     learning_rate: float = 1e-4
     fp16: bool = False
     bf16: bool = True
@@ -38,7 +38,20 @@ class OmniTrainingConfig:
     completion_only_loss: bool = False
     warmup_steps: int = 5000
     modality: str = 'video'
-    
+
+    # ---- Ablation switches (overridable via env vars for parallel runs) ----
+    # loss_type: "kl"  -> soft-label KL divergence (original)
+    #            "mse" -> regression MSE on the expected score
+    loss_type: str = os.environ.get("ABLATION_LOSS_TYPE", "mse")
+    # modality_mix: False -> each batch is single-modality (original)
+    #               True  -> mix video/audio/text within one batch (omni must be off)
+    modality_mix: bool = os.environ.get("ABLATION_MODALITY_MIX", "0") == "1"
+    # use_first_teacher: False -> average all teacher responses (original, wikivideo only)
+    #                    True  -> use only the first teacher response
+    use_first_teacher: bool = os.environ.get("ABLATION_USE_FIRST_TEACHER", "0") == "1"
+    # new_token_num / sigma: bin count and soft-label width (original: 100 / 0.05)
+    # also settable via env for the N / sigma ablation runs
+
     # Evaluation parameters
     evaluation_strategy: str = "steps"
     eval_steps: int = 100
@@ -54,14 +67,14 @@ class OmniTrainingConfig:
     lora_target_modules: Optional[str] = None
 
     # New tokens for the model
-    new_token_num: int = 100
+    new_token_num: int = int(os.environ.get("ABLATION_NEW_TOKEN_NUM", "100"))
     new_token_prefix: str = "<CON_{idx}>"
-    sigma: float = 0.05
+    sigma: float = float(os.environ.get("ABLATION_SIGMA", "0.05"))
 
     # dataset parameters
     # wikivideo 
-    wikivideo_pre_path: str = os.path.join(DATA_ROOT, "wikivideo/combined_videos")
-    wikivideo_audio_pre_path: str = os.path.join(DATA_ROOT, "wikivideo/audios/en")
+    wikivideo_pre_path: str = os.path.join(DATA_ROOT, "wikivideo_/data/combined_videos")
+    wikivideo_audio_pre_path: str = os.path.join(DATA_ROOT, "wikivideo_/data/audios/en")
     wikivideo_label_path: str = os.path.join(DATA_ROOT, "wikivideo/annotations/final_data_2015-2025.json")
     wikivideo_eval_tag: list = field(default_factory=lambda:
         [
@@ -81,13 +94,13 @@ class OmniTrainingConfig:
     clotho_pre_path: str = os.path.join(DATA_ROOT, "audio_entailment/clotho")
     clotho_label_path: str = os.path.join(DATA_ROOT, "AudioEntailment/data/CLE")
     clotho_eval_tag: list = field(default_factory=lambda: ['evaluation'])
-    # UNLI
-    unli_label_path: str = os.path.join(DATA_ROOT, "UNLI")
+    # UNLI (jsonl labels live under UMUI/training-data regardless of DATA_ROOT)
+    unli_label_path: str = '/exp/dzhang1/UMUI/training-data/unli'
     unli_eval_tag: list = field(default_factory=lambda: ['validation'])
     # PeopleProfile
     peopleprofile_label_path: str = os.path.join(DATA_ROOT, "peopleprofile")
     peopleprofile_eval_tag: list = field(default_factory=lambda: ['dev'])
-    # VIOLIN 
+    # VIOLIN
     violin_label_path: str = os.path.join(DATA_ROOT, "violin/violin_annotation.json")
     violin_pre_path: str = os.path.join(DATA_ROOT, "violin/violin_videos")
     violin_eval_tag: list = field(default_factory=lambda: ['validate'])
@@ -101,17 +114,17 @@ class OmniEvalConfig:
     lora_path: str = ''
     processor_path: str = ''
     batch_size: int = 4
-    # New tokens for the model
-    new_token_num: int = 100
+    # New tokens for the model (env-overridable to eval the N / sigma ablations)
+    new_token_num: int = int(os.environ.get("ABLATION_NEW_TOKEN_NUM", "100"))
     new_token_prefix: str = "<CON_{idx}>"
-    sigma: float = 0.05
+    sigma: float = float(os.environ.get("ABLATION_SIGMA", "0.05"))
 
     dataset_name: str = 'clotho'
     modality: str = 'audio'
-    # wikivideo 
-    wikivideo_pre_path: str = os.path.join(DATA_ROOT, "wikivideo/combined_videos")
-    wikivideo_audio_pre_path: str = os.path.join(DATA_ROOT, "wikivideo/audios/en")
-    wikivideo_label_path: str = os.path.join(DATA_ROOT, "wikivideo/annotations/final_data_2015-2025.json")
+    # wikivideo (actual layout is wikivideo_/data/..., see gen_eval_data.make_config)
+    wikivideo_pre_path: str = os.path.join(DATA_ROOT, "wikivideo_/data/combined_videos")
+    wikivideo_audio_pre_path: str = os.path.join(DATA_ROOT, "wikivideo_/data/audios/en")
+    wikivideo_label_path: str = os.path.join(DATA_ROOT, "wikivideo_/annotations/final_data_2015-2025.json")
     wikivideo_eval_tag: list = field(default_factory=lambda:
         [
             'Launch and commissioning of the James Webb Space Telescope',
@@ -129,8 +142,8 @@ class OmniEvalConfig:
     clotho_pre_path: str = os.path.join(DATA_ROOT, "audio_entailment/clotho")
     clotho_label_path: str = os.path.join(DATA_ROOT, "AudioEntailment/data/CLE")
     clotho_eval_tag: list = field(default_factory=lambda: ['evaluation'])
-    # UNLI
-    unli_label_path: str = os.path.join(DATA_ROOT, "UNLI")
+    # UNLI (jsonl labels live under UMUI/training-data regardless of DATA_ROOT)
+    unli_label_path: str = '/exp/dzhang1/UMUI/training-data/unli'
     unli_eval_tag: list = field(default_factory=lambda: ['validation'])
     # PeopleProfile
     peopleprofile_label_path: str = os.path.join(DATA_ROOT, "peopleprofile")

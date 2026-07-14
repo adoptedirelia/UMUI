@@ -12,6 +12,7 @@ from prompt import *
 from evaldataset import *
 import warnings
 import argparse
+import librosa
 
 
 warnings.filterwarnings("ignore")
@@ -168,6 +169,11 @@ class OmniEvaluator:
             USE_AUDIO_IN_VIDEO = True
             text = self.processor.apply_chat_template(llm_inputs, add_generation_prompt=True, tokenize=False)
             audios, images, videos = self.process_mm_info(llm_inputs, use_audio_in_video=USE_AUDIO_IN_VIDEO)
+            # Same effect as loading with librosa.load(sr=audio_load_sr): the waveform is
+            # resampled down but the processor still treats it as 16 kHz.
+            load_sr = getattr(self.config, 'audio_load_sr', None)
+            if load_sr and load_sr != 16000 and audios:
+                audios = [librosa.resample(a, orig_sr=16000, target_sr=load_sr) for a in audios]
 
             inputs = self.processor(text=text, audio=audios, images=images, videos=videos, return_tensors="pt", padding=True, use_audio_in_video=USE_AUDIO_IN_VIDEO)
             inputs = inputs.to(self.model.device).to(self.model.dtype)
@@ -305,27 +311,44 @@ class OmniEvaluator:
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--device', type=str, default='auto')
+    parser.add_argument('--dataset_name', type=str, default=None)
+    parser.add_argument('--modality', type=str, default=None)
+    parser.add_argument('--lora_path', type=str, default=None)
+    parser.add_argument('--processor_path', type=str, default=None)
+    parser.add_argument('--output_eval_path', type=str, default=None)
+    parser.add_argument('--data_begin', type=int, default=0)
+    parser.add_argument('--data_end', type=int, default=-1)
+    parser.add_argument('--batch_size', type=int, default=8)
+    parser.add_argument('--audio_load_sr', type=int, default=None,
+                        help='Degrade audio at load time: resample from 16 kHz down to this rate '
+                             'before feeding the model (robustness eval; audio files untouched)')
+    args = parser.parse_args()
+
     config = OmniEvalConfig()
+    config.device = args.device
+    if args.dataset_name is not None:
+        config.dataset_name = args.dataset_name
+    if args.modality is not None:
+        config.modality = args.modality
+    if args.lora_path is not None:
+        config.lora_path = args.lora_path
+    if args.processor_path is not None:
+        config.processor_path = args.processor_path
+    if args.output_eval_path is not None:
+        config.output_eval_path = args.output_eval_path
+    config.audio_load_sr = args.audio_load_sr
+    config.batch_size = args.batch_size
+
     evaluator = OmniEvaluator(config)
     evaluator.create_dataset()
 
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--device', type=str, default='auto')
-    parser.add_argument('--data_begin', type=int, default=0)
-    parser.add_argument('--data_end', type=int, default=len(evaluator.eval_dataset))
-    parser.add_argument('--batch_size', type=int, default=8)
-
-    args = parser.parse_args()
-    config.device = args.device
     config.data_begin = args.data_begin
-    config.data_end = args.data_end
-    config.batch_size = args.batch_size
-    if config.modality == 'video' or config.modality == 'omni':
-        os.makedirs(os.path.join(config.output_eval_path), exist_ok=True)
-        config.output_path = os.path.join(config.output_eval_path,  f'{config.dataset_name}_{config.modality}_{config.data_begin}_{config.data_end}.json')
-    else:
-        os.makedirs(os.path.join(config.output_eval_path), exist_ok=True)
-        config.output_path = os.path.join(config.output_eval_path,  f'{config.dataset_name}_{config.modality}_{config.data_begin}_{config.data_end}.json')
+    config.data_end = args.data_end if args.data_end >= 0 else len(evaluator.eval_dataset)
+
+    os.makedirs(os.path.join(config.output_eval_path), exist_ok=True)
+    config.output_path = os.path.join(config.output_eval_path,  f'{config.dataset_name}_{config.modality}_{config.data_begin}_{config.data_end}.json')
     evaluator.create_model()
     results = evaluator.evaluate()
     with open(config.output_path, 'w') as f:

@@ -32,7 +32,7 @@ def extract_answer_from_output(output_text: str) -> float:
             return 0.0
     return 0.0
 
-def convert_probability_wikivideo(list_of_probability: List[str]) -> List[float]:
+def convert_probability_wikivideo(list_of_probability: List[str], use_first: bool = False) -> float:
     lst = []
     for item in list_of_probability:
         if '<answer>' in item:
@@ -40,6 +40,9 @@ def convert_probability_wikivideo(list_of_probability: List[str]) -> List[float]
             lst.append(extract_answer_from_output(item))
         else:
             continue
+    if use_first and len(lst) > 0:
+        # ablation: use only the first teacher response instead of averaging all
+        return lst[0]
     return np.mean(lst)
 
 class PromptBuilder:
@@ -146,14 +149,13 @@ class WikiVideoDataset:
         data = {k: v for k, v in self.data.items() if k not in event_lst}
         for e in data.values():
             for item in e:
-                if self.modality == 'omni':
-                    path = item['path']
-                else:
-                    path = item['path']
+                # JSON stores relative paths like 'wikivideo_/combined_videos/X.mp4';
+                # actual files live under wikivideo_pre_path (.../wikivideo_/data/combined_videos).
+                path = os.path.join(self.wikivideo_pre_path, os.path.basename(item['path']))
 
                 message = {
                     'messages': PromptBuilder.build_messages_vl(item['claim'], path, self.config),
-                    'answer': convert_probability_wikivideo(item['answer']),
+                    'answer': convert_probability_wikivideo(item['answer'], use_first=self.config.use_first_teacher),
                     'label': item['label'],
                     'modality': self.modality,
                 }
@@ -166,12 +168,9 @@ class WikiVideoDataset:
         data = {k: v for k, v in self.data.items() if k in event_lst}
         for e in data.values():
             for item in e:
-                if self.modality == 'omni':
-                    path = item['path']
-                else:
-                    path = item['path']
+                path = os.path.join(self.wikivideo_pre_path, os.path.basename(item['path']))
                 message = {
-                    'messages': PromptBuilder.build_messages_vl(item['claim'], item['path'], self.config),
+                    'messages': PromptBuilder.build_messages_vl(item['claim'], path, self.config),
                     'answer': convert_probability(item['answer']),
                     'label': item['label'],
                     'modality': 'omni',
@@ -189,8 +188,8 @@ class WikiVideoDataset:
             else:
                 False_label += 1
                 False_item.append(item)
-        print(f'True_label: {True_label}')
-        print(f'False_label: {False_label}')
+        # print(f'True_label: {True_label}')
+        # print(f'False_label: {False_label}')
         random.seed(42)
         if True_label < False_label:
             random.shuffle(False_item)
@@ -218,7 +217,9 @@ class ClothoDataset:
         train_data = []
         eval_data = []
         for item in self.data['development']:
-            path = item['path']
+            # JSON stores relative paths like 'clotho/development/X.wav';
+            # clotho_pre_path already ends in '.../clotho', so join from its parent.
+            path = os.path.join(os.path.dirname(self.clotho_pre_path), item['path'])
             message = {
                 'messages': PromptBuilder.build_messages_audio(item['claim'], path, self.config),
                 'answer': convert_probability(item['answer']),
@@ -228,7 +229,7 @@ class ClothoDataset:
             if (message['answer'] >= 0.5 and message['label'] == True) or (message['answer'] < 0.5 and message['label'] == False):
                 train_data.append(message)
         for item in self.data['evaluation']:
-            path = item['path']
+            path = os.path.join(os.path.dirname(self.clotho_pre_path), item['path'])
             message = {
                 'messages': PromptBuilder.build_messages_audio(item['claim'], path, self.config),
                 'answer': convert_probability(item['answer']),

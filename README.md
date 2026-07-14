@@ -12,7 +12,8 @@ src/
 │   ├── analyse.py                                    # Core utilities (correlation, Krippendorff α, histograms)
 │   └── main.py                                       # Analysis pipeline (variant 1)
 ├── eval/
-│   └── main.py                                       # Evaluation (acc, F1, MSE, NLL, ECE)
+│   ├── run_eval.py                                   # Universal eval: released UNLI model on UMUI benchmarks
+│   └── main.py                                       # Metric utilities for existing prediction files
 ├── synthetic_data/                                   # Synthetic data generation
 │   ├── config.py                                     # Configuration & CLI arguments
 │   ├── generation.py                                 # Core batch generation pipeline
@@ -139,6 +140,7 @@ Two training paradigms are supported:
 
 ```bash
 cd src/training/NLI
+export CUDA_HOME=/usr/local/cuda-12.8
 deepspeed --num_gpus=4 omni_trainer.py
 ```
 
@@ -149,10 +151,46 @@ deepspeed --num_gpus=4 omni_trainer.py
 
 ```bash
 cd src/training/NT
+export CUDA_HOME=/usr/local/cuda-12.8
 deepspeed --num_gpus=4 omni_trainer.py
 ```
 
 ## Evaluation
+
+`src/eval/run_eval.py` evaluates the released model ([AdoptedIrelia/UNLI](https://huggingface.co/AdoptedIrelia/UNLI)) on the UMUI benchmarks ([AdoptedIrelia/UMUI](https://huggingface.co/datasets/AdoptedIrelia/UMUI)) in one command. The model (base + LoRA adapter in `lora/`) and the label files are downloaded from Hugging Face automatically; only the media tarballs (`wikivideo.tar.gz`, `audio_entailment.tar.gz`) need to be extracted locally and passed via `--media-root` (or the `UMUI_MEDIA_ROOT` env var).
+
+```bash
+# text: UNLI validation split (no media needed)
+python -m src.eval.run_eval --dataset unli --modality text
+
+# audio: Clotho entailment
+python -m src.eval.run_eval --dataset clotho --modality audio \
+    --media-root /path/to/extracted/media
+
+# video / audio / omni: WikiVideo (media-root = the extracted wikivideo.tar.gz)
+python -m src.eval.run_eval --dataset wikivideo --modality video \
+    --media-root /path/to/wikivideo_
+```
+
+WikiVideo items are built the same way as `src/training/NLI/evaldataset.py` — from `<media-root>/annotations/final_data_2015-2025.json`, restricted to the 10 eval events, with per-modality labels (`video|ocr` for video, `audio & !video & !ocr` for audio, `video|audio` for omni). Human probabilities are joined in from `UMUI-annotation/annotation.json` (downloaded from the hub, or `--annotation-file`) for the soft metrics.
+
+Useful options:
+
+| Option | Description |
+|--------|-------------|
+| `--model` | HF repo or local dir; a `lora/` subfolder (or `model/` + `lora/` layout) is auto-detected. Default: `AdoptedIrelia/UNLI` |
+| `--lora` | Explicit LoRA adapter path, overrides auto-detection |
+| `--data-file` | Use a local label file instead of the default source |
+| `--annotation-file` | WikiVideo only: local `annotation.json` with human probabilities |
+| `--batch-size` | Inference batch size (default 4) |
+| `--start` / `--end` | Dataset slice, for sharding across SLURM jobs |
+| `--metrics-only` | Recompute metrics from an existing output file, no GPU needed |
+
+Predictions are appended to `<output-dir>/<dataset>_<modality>.jsonl` as they are produced, so an interrupted run resumes where it left off; metrics land next to it in `<dataset>_<modality>.metrics.json`.
+
+Reported metrics: accuracy / F1 / precision / recall on all datasets; NLL, ECE, MSE, and Krippendorff's α are additionally computed against the human probability on the annotated subset (all of UNLI; for WikiVideo the items matched in `annotation.json`, reported as `n_with_probability`). Krippendorff's α requires the optional `krippendorff` package.
+
+Legacy metric utilities for existing prediction files:
 
 ```bash
 python -m src.eval.main

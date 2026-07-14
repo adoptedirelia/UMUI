@@ -26,9 +26,10 @@ def find_start_idx(list_ids: List[int], ids: List[int]) -> int:
     return -1
 
 class CollateFn:
-    def __init__(self, processor):
+    def __init__(self, processor, modality_mix: bool = False):
         self.processor = processor
-    
+        self.modality_mix = modality_mix
+
     def __call__(self, batch: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
         map_ ={
             "omni": 0,
@@ -37,6 +38,19 @@ class CollateFn:
             "text": 3
         }
         texts = [message['messages'] for message in batch]
+
+        if self.modality_mix:
+            # Heterogeneous batch (video/audio/text mixed). use_audio_in_video must
+            # be uniform across the batch, so omni is not supported in mixed mode.
+            USE_AUDIO_IN_VIDEO = False
+            text = self.processor.apply_chat_template(texts, add_generation_prompt=True, tokenize=False)
+            audios, images, videos = process_mm_info(texts, use_audio_in_video=USE_AUDIO_IN_VIDEO)
+            inputs = self.processor(text=text, audio=audios, images=images, videos=videos, return_tensors="pt", padding=True, use_audio_in_video=USE_AUDIO_IN_VIDEO)
+            inputs['use_audio_in_video'] = USE_AUDIO_IN_VIDEO
+            inputs['answer'] = torch.tensor([message['answer'] for message in batch])
+            inputs['modality'] = torch.tensor([map_[message['modality']] for message in batch])
+            return inputs
+
         modality = [message['modality'] for message in batch][0]
 
         if modality == "omni":
@@ -174,14 +188,17 @@ def get_param_sum(model):
     return total
 
 def generate_soft_label(target_prob, num_bins=100, sigma=0.05, device='cpu'):
-    bins = torch.arange(num_bins, device=device).float()
-    
-    target_idx = target_prob * (num_bins - 1)
-    
-    density = torch.exp(- (bins - target_idx)**2 / (2 * sigma**2))
+    # sigma is on the [0,1] probability scale (bin spacing = 1/(num_bins-1)),
+    # so sigma=0.05 spreads over ~+-5 bins. Subtracting the max before exp keeps
+    # small sigmas from underflowing every bin to 0 (0/0 = NaN); the limit is a
+    # one-hot on the nearest bin instead.
+    bins = torch.linspace(0.0, 1.0, num_bins, device=device)
+
+    log_density = - (bins - target_prob)**2 / (2 * sigma**2)
+    density = torch.exp(log_density - log_density.max())
 
     soft_label = density / density.sum()
-    
+
     return soft_label
 
 class KLTrainer(SFTTrainer):
@@ -192,9 +209,40 @@ class KLTrainer(SFTTrainer):
         self.processor = processor
         self.param_sum = get_param_sum(model)
 
+    def _build_mixed_dataloader(self, dataset, batch_size, shuffle, drop_last):
+        """Standard (modality-agnostic) dataloader for modality-mix ablation."""
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            sampler = torch.utils.data.distributed.DistributedSampler(
+                dataset, shuffle=shuffle, drop_last=drop_last)
+            return torch.utils.data.DataLoader(
+                dataset,
+                batch_size=batch_size,
+                sampler=sampler,
+                collate_fn=self.data_collator,
+                num_workers=self.args.dataloader_num_workers,
+                pin_memory=self.args.dataloader_pin_memory,
+                drop_last=drop_last,
+            )
+        return torch.utils.data.DataLoader(
+            dataset,
+            batch_size=batch_size,
+            shuffle=shuffle,
+            collate_fn=self.data_collator,
+            num_workers=self.args.dataloader_num_workers,
+            pin_memory=self.args.dataloader_pin_memory,
+            drop_last=drop_last,
+        )
+
     def get_train_dataloader(self):
         if self.train_dataset is None:
             raise ValueError("Trainer: training requires a train_dataset.")
+        if self.diy_config.modality_mix:
+            return self._build_mixed_dataloader(
+                self.train_dataset,
+                batch_size=self.diy_config.per_device_train_batch_size,
+                shuffle=True,
+                drop_last=True,
+            )
         if hasattr(self.train_dataset, 'modalities'):
             modalities = self.train_dataset.modalities
         else:
@@ -255,9 +303,11 @@ class KLTrainer(SFTTrainer):
         pre_pdf = torch.cumsum(probabilities, dim=-1)
         target_pdf = torch.cumsum(target_dist, dim=-1)
         # emd_loss = torch.mean((pre_pdf - target_pdf)**2)
-        loss_fct = torch.nn.KLDivLoss(reduction='batchmean')
-        kl_loss = loss_fct(logprob, target_dist)
-        loss = kl_loss
+        if self.diy_config.loss_type == "mse":
+            loss = F.mse_loss(pred_scores, target_scores)
+        else:
+            loss_fct = torch.nn.KLDivLoss(reduction='batchmean')
+            loss = loss_fct(logprob, target_dist)
 
 
         return loss
@@ -266,7 +316,15 @@ class KLTrainer(SFTTrainer):
         """Get evaluation dataloader"""
         if self.eval_dataset is None:
             raise ValueError("Trainer: evaluation requires an eval_dataset.")
-        
+
+        if self.diy_config.modality_mix:
+            return self._build_mixed_dataloader(
+                self.eval_dataset,
+                batch_size=self.diy_config.per_device_eval_batch_size,
+                shuffle=False,
+                drop_last=False,
+            )
+
         if hasattr(self.eval_dataset, 'modalities'):
             modalities = self.eval_dataset.modalities
         else:
@@ -478,6 +536,11 @@ class OmniTrainer:
                 output_embeddings[new_token_ids[i]] = 10/11*tenth_embedding + 1/11*digit_embedding
         
         self.processor.save_pretrained(self.config.output_dir)
+        # Also save the resized base model: evaluate.py loads the full base
+        # from --processor_path, and the shared /exp/dzhang1/CLUE/model only
+        # has the default 100 <CON_*> tokens (wrong vocab for N ablations).
+        if int(os.environ.get("LOCAL_RANK", "0")) == 0:
+            self.model.save_pretrained(self.config.output_dir)
 
 
     def create_trainer(self):
@@ -490,7 +553,7 @@ class OmniTrainer:
         self.trainer = KLTrainer(
             model=self.model,
             args=self.sft_config,
-            data_collator=CollateFn(self.processor),
+            data_collator=CollateFn(self.processor, modality_mix=self.config.modality_mix),
             train_dataset=self.train_dataset,
             eval_dataset=self.eval_dataset,
             diy_config=self.config,
